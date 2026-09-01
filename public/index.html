@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mahjong Solitaire</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <h1>Mahjong Solitaire</h1>
+      <div class="stats">
+        <div class="stat"><span class="stat-label">Time</span><span id="timer">00:00</span></div>
+        <div class="stat"><span class="stat-label">Moves</span><span id="moves">0</span></div>
+        <div class="stat"><span class="stat-label">Tiles left</span><span id="tilesLeft">144</span></div>
+      </div>
+      <div class="actions">
+        <button id="newBtn" title="Start a new game">New Game</button>
+        <button id="undoBtn" title="Undo last move" disabled>Undo</button>
+        <button id="shuffleBtn" title="Shuffle remaining tiles">Shuffle</button>
+        <button id="hintBtn" title="Show a free matching pair">Hint</button>
+      </div>
+    </header>
+
+    <main class="board-wrap">
+      <div id="board" class="board"></div>
+      <div id="banner" class="banner hidden"></div>
+    </main>
+
+    <footer class="footer">
+      Click two matching free tiles to remove them. A tile is free if nothing sits on top of it and at least one side (left or right) is open.
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
