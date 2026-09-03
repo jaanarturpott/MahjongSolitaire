@@ -1,10 +1,25 @@
-# Default ignored files
-/shelf/
-/workspace.xml
-# Ignored default folder with query files
-/queries/
-# Datasource local storage ignored files
-/dataSources/
-/dataSources.local.xml
-# Editor-based HTTP Client requests
-/httpRequests/
+# Compiled class files
+*.class
+
+# Build output
+out/
+build/
+target/
+
+# VS Code
+.vscode/
+
+# Log files
+*.log
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Package files
+*.jar
+*.war
+
+# Maven/Gradle (in case you add either later)
+.gradle/
+.mvn/
