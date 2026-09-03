@@ -78,7 +78,8 @@ public class MahjongServer {
     // ---------------------------------------------------------------------
     // Tile types
     // ---------------------------------------------------------------------
-    // 0-33  : 34 "regular" suits/honors, 4 physical copies each -> 136 tiles
+
+    // 0-33 : 34 "regular" suits/honors, 4 physical copies each -> 136 tiles
     // 34-37 : Flowers (wildcard group - any flower matches any flower)
     // 38-41 : Seasons (wildcard group - any season matches any season)
     static final int REGULAR_TYPES = 34;
@@ -144,11 +145,13 @@ public class MahjongServer {
             Tile t = tiles[idx];
             if (t.removed) return false;
             Slot s = LAYOUT.get(idx);
+
             for (int j = 0; j < tiles.length; j++) {
                 if (tiles[j].removed) continue;
                 Slot o = LAYOUT.get(j);
                 if (o.level > s.level && o.col == s.col && o.row == s.row) return false;
             }
+
             boolean openLeft = true, openRight = true;
             for (int j = 0; j < tiles.length; j++) {
                 if (tiles[j].removed) continue;
@@ -178,26 +181,102 @@ public class MahjongServer {
     static final Map<String, Game> GAMES = new ConcurrentHashMap<>();
     static final Random RNG = new Random();
 
-    /** Generates a guaranteed-solvable board: simulate a valid removal order over
-     *  the (typeless) slots, then deal matching pairs of types along that order. */
-    static Game newGame() {
-        int n = LAYOUT.size();
-        Game g = new Game(UUID.randomUUID().toString());
+    // ---------------------------------------------------------------------
+    // Solvable dealing
+    // ---------------------------------------------------------------------
 
-        List<int[]> removalPairs = null;
-        for (int attempt = 0; attempt < 50 && removalPairs == null; attempt++) {
-            removalPairs = tryBuildRemovalOrder(n);
-        }
-        if (removalPairs == null) {
-            // Should not happen for this layout; fall back to arbitrary pairing.
-            removalPairs = new ArrayList<>();
-            List<Integer> rest = new ArrayList<>();
-            for (int i = 0; i < n; i++) rest.add(i);
-            Collections.shuffle(rest, RNG);
-            for (int i = 0; i + 1 < rest.size(); i += 2) removalPairs.add(new int[]{rest.get(i), rest.get(i + 1)});
-        }
+    /**
+     * Simulates peeling a board (defined by which slots are currently "remaining")
+     * from top to bottom, always removing two free slots at a time, to produce a
+     * valid removal order. Returns null if it dead-ends (fewer than 2 free slots
+     * remain but slots are still left) - caller should retry with a fresh shuffle.
+     */
+    static List<int[]> buildRemovalOrder(boolean[] initialRemaining) {
+        int n = initialRemaining.length;
+        boolean[] remaining = initialRemaining.clone();
+        int remainingCount = 0;
+        for (boolean b : remaining) if (b) remainingCount++;
 
-        // Build the 72 pair-type "tokens" to assign along the removal order.
+        List<int[]> pairs = new ArrayList<>();
+        while (remainingCount > 0) {
+            List<Integer> free = new ArrayList<>();
+            for (int i = 0; i < n; i++) {
+                if (!remaining[i]) continue;
+                Slot s = LAYOUT.get(i);
+
+                boolean covered = false;
+                for (int j = 0; j < n; j++) {
+                    if (!remaining[j]) continue;
+                    Slot o = LAYOUT.get(j);
+                    if (o.level > s.level && o.col == s.col && o.row == s.row) { covered = true; break; }
+                }
+                if (covered) continue;
+
+                boolean openLeft = true, openRight = true;
+                for (int j = 0; j < n; j++) {
+                    if (!remaining[j]) continue;
+                    Slot o = LAYOUT.get(j);
+                    if (o.level == s.level && o.row == s.row) {
+                        if (o.col == s.col - 1) openLeft = false;
+                        if (o.col == s.col + 1) openRight = false;
+                    }
+                }
+                if (openLeft || openRight) free.add(i);
+            }
+
+            if (free.size() < 2) return null; // dead end, caller will retry
+
+            Collections.shuffle(free, RNG);
+            int a = free.get(0), b = free.get(1);
+            remaining[a] = false; remaining[b] = false;
+            remainingCount -= 2;
+            pairs.add(new int[]{a, b});
+        }
+        return pairs;
+    }
+
+    /** Same free-tile check as Game.isFree, but operating on a plain boolean[] "removed" array. */
+    static boolean isFreeSim(int idx, boolean[] removed) {
+        Slot s = LAYOUT.get(idx);
+        for (int j = 0; j < removed.length; j++) {
+            if (removed[j]) continue;
+            Slot o = LAYOUT.get(j);
+            if (o.level > s.level && o.col == s.col && o.row == s.row) return false;
+        }
+        boolean openLeft = true, openRight = true;
+        for (int j = 0; j < removed.length; j++) {
+            if (removed[j]) continue;
+            Slot o = LAYOUT.get(j);
+            if (o.level == s.level && o.row == s.row) {
+                if (o.col == s.col - 1) openLeft = false;
+                if (o.col == s.col + 1) openRight = false;
+            }
+        }
+        return openLeft || openRight;
+    }
+
+    /**
+     * Actually plays out {@code pairs} in order against {@code typeOf}, starting from
+     * {@code initialRemoved}, checking at every step that both tiles are genuinely free
+     * AND genuinely match. This is the real solvability proof - it doesn't trust the
+     * construction step, it re-derives freeness independently and confirms the whole
+     * sequence is playable. If this returns true, the board is guaranteed solvable
+     * by following these exact pairs in order.
+     */
+    static boolean simulateSolveFrom(boolean[] initialRemoved, List<int[]> pairs, int[] typeOf) {
+        boolean[] removed = initialRemoved.clone();
+        for (int[] pair : pairs) {
+            int a = pair[0], b = pair[1];
+            if (!isFreeSim(a, removed) || !isFreeSim(b, removed)) return false;
+            if (!matchKey(typeOf[a]).equals(matchKey(typeOf[b]))) return false;
+            removed[a] = true;
+            removed[b] = true;
+        }
+        return true;
+    }
+
+    /** Assigns the full 144-tile canonical deck of types onto a removal order, one pair-token per slot pair. */
+    static int[] assignFullDeckTypes(List<int[]> removalPairs, int n) {
         List<String> pairTokens = new ArrayList<>();
         for (int t = 0; t < REGULAR_TYPES; t++) { pairTokens.add("R" + t); pairTokens.add("R" + t); }
         pairTokens.add("FLOWER"); pairTokens.add("FLOWER");
@@ -227,50 +306,96 @@ public class MahjongServer {
             typeOf[pair[0]] = typeA;
             typeOf[pair[1]] = typeB;
         }
+        return typeOf;
+    }
+
+    /**
+     * Assigns the CURRENT set of remaining tile types (from an in-progress game) onto
+     * a fresh removal order over the remaining slots. Used by Shuffle, so the tile
+     * *contents* on the board don't change, only their positions.
+     */
+    static int[] assignRemainingTypes(Game g, List<int[]> removalPairs) {
+        int n = g.tiles.length;
+        Map<Integer, Integer> regularCounts = new HashMap<>(); // exact type -> remaining count (always even)
+        List<Integer> flowerIds = new ArrayList<>();
+        List<Integer> seasonIds = new ArrayList<>();
+
+        for (int i = 0; i < n; i++) {
+            if (g.tiles[i].removed) continue;
+            int type = g.tiles[i].type;
+            if (type < REGULAR_TYPES) regularCounts.merge(type, 1, Integer::sum);
+            else if (type < SEASON_BASE) flowerIds.add(type);
+            else seasonIds.add(type);
+        }
+        Collections.shuffle(flowerIds, RNG);
+        Collections.shuffle(seasonIds, RNG);
+
+        List<String> pairTokens = new ArrayList<>();
+        for (Map.Entry<Integer, Integer> e : regularCounts.entrySet()) {
+            int pairsOfThisType = e.getValue() / 2; // guaranteed even: matches always remove 2 of the same type
+            for (int k = 0; k < pairsOfThisType; k++) pairTokens.add("R" + e.getKey());
+        }
+        for (int k = 0; k < flowerIds.size() / 2; k++) pairTokens.add("FLOWER");
+        for (int k = 0; k < seasonIds.size() / 2; k++) pairTokens.add("SEASON");
+        Collections.shuffle(pairTokens, RNG);
+
+        int[] typeOf = new int[n];
+        for (int i = 0; i < removalPairs.size(); i++) {
+            int[] pair = removalPairs.get(i);
+            String token = pairTokens.get(i);
+            int typeA, typeB;
+            if (token.startsWith("R")) {
+                int t = Integer.parseInt(token.substring(1));
+                typeA = t; typeB = t;
+            } else if (token.equals("FLOWER")) {
+                typeA = flowerIds.remove(flowerIds.size() - 1);
+                typeB = flowerIds.remove(flowerIds.size() - 1);
+            } else {
+                typeA = seasonIds.remove(seasonIds.size() - 1);
+                typeB = seasonIds.remove(seasonIds.size() - 1);
+            }
+            typeOf[pair[0]] = typeA;
+            typeOf[pair[1]] = typeB;
+        }
+        return typeOf;
+    }
+
+    /**
+     * Generates a fresh 144-tile board and NEVER returns until the board has been
+     * verified, end to end, to be solvable. Every candidate is actually simulated
+     * (see simulateSolveFrom) before it's accepted - nothing ships unverified.
+     */
+    static Game newGame() {
+        int n = LAYOUT.size();
+        Game g = new Game(UUID.randomUUID().toString());
+
+        boolean[] allTrue = new boolean[n];
+        Arrays.fill(allTrue, true);
+        boolean[] noneRemoved = new boolean[n]; // all false: nothing removed at game start
+
+        int[] typeOf = null;
+        final int MAX_ATTEMPTS = 2000;
+        for (int attempt = 0; attempt < MAX_ATTEMPTS && typeOf == null; attempt++) {
+            List<int[]> removalPairs = buildRemovalOrder(allTrue);
+            if (removalPairs == null) continue; // peeling dead-ended, try a fresh random order
+
+            int[] candidate = assignFullDeckTypes(removalPairs, n);
+            if (simulateSolveFrom(noneRemoved, removalPairs, candidate)) {
+                typeOf = candidate; // independently verified playable start to finish
+            }
+        }
+
+        if (typeOf == null) {
+            // Practically unreachable for this fixed layout, but we refuse to ever
+            // hand out a board we haven't verified - fail loudly instead of silently
+            // shipping something that might be unsolvable.
+            throw new IllegalStateException(
+                "Failed to generate a verified-solvable board after " + MAX_ATTEMPTS + " attempts");
+        }
 
         for (int i = 0; i < n; i++) g.tiles[i] = new Tile(i, typeOf[i]);
         GAMES.put(g.id, g);
         return g;
-    }
-
-    /** Simulates peeling the (typeless) board from top to bottom to get a valid removal order. */
-    static List<int[]> tryBuildRemovalOrder(int n) {
-        boolean[] remaining = new boolean[n];
-        Arrays.fill(remaining, true);
-        List<int[]> pairs = new ArrayList<>();
-        int remainingCount = n;
-
-        while (remainingCount > 0) {
-            List<Integer> free = new ArrayList<>();
-            for (int i = 0; i < n; i++) {
-                if (!remaining[i]) continue;
-                Slot s = LAYOUT.get(i);
-                boolean covered = false;
-                for (int j = 0; j < n; j++) {
-                    if (!remaining[j]) continue;
-                    Slot o = LAYOUT.get(j);
-                    if (o.level > s.level && o.col == s.col && o.row == s.row) { covered = true; break; }
-                }
-                if (covered) continue;
-                boolean openLeft = true, openRight = true;
-                for (int j = 0; j < n; j++) {
-                    if (!remaining[j]) continue;
-                    Slot o = LAYOUT.get(j);
-                    if (o.level == s.level && o.row == s.row) {
-                        if (o.col == s.col - 1) openLeft = false;
-                        if (o.col == s.col + 1) openRight = false;
-                    }
-                }
-                if (openLeft || openRight) free.add(i);
-            }
-            if (free.size() < 2) return null; // dead end, caller will retry
-            Collections.shuffle(free, RNG);
-            int a = free.get(0), b = free.get(1);
-            remaining[a] = false; remaining[b] = false;
-            remainingCount -= 2;
-            pairs.add(new int[]{a, b});
-        }
-        return pairs;
     }
 
     // ---------------------------------------------------------------------
@@ -373,13 +498,17 @@ public class MahjongServer {
             Integer b = extractInt(body, "tileB");
             Game g = requireGame(ex, gameId);
             if (g == null) return;
+
             if (a == null || b == null || a < 0 || b < 0 || a >= g.tiles.length || b >= g.tiles.length || a.equals(b)) {
                 sendJson(ex, 400, err("Invalid tile ids")); return;
             }
+
             Tile ta = g.tiles[a], tb = g.tiles[b];
             if (ta.removed || tb.removed) { sendJson(ex, 200, boardJson(g)); return; }
+
             boolean free = g.isFree(a) && g.isFree(b);
             boolean match = matchKey(ta.type).equals(matchKey(tb.type));
+
             if (free && match) {
                 ta.removed = true;
                 tb.removed = true;
@@ -397,6 +526,7 @@ public class MahjongServer {
             String gameId = extractString(body, "gameId");
             Game g = requireGame(ex, gameId);
             if (g == null) return;
+
             if (!g.history.isEmpty()) {
                 int[] pair = g.history.pop();
                 g.tiles[pair[0]].removed = false;
@@ -414,13 +544,39 @@ public class MahjongServer {
             String gameId = extractString(body, "gameId");
             Game g = requireGame(ex, gameId);
             if (g == null) return;
-            List<Integer> remainingIdx = new ArrayList<>();
-            List<Integer> types = new ArrayList<>();
-            for (int i = 0; i < g.tiles.length; i++) {
-                if (!g.tiles[i].removed) { remainingIdx.add(i); types.add(g.tiles[i].type); }
+
+            int n = g.tiles.length;
+            boolean[] remaining = new boolean[n];
+            boolean[] alreadyRemoved = new boolean[n];
+            for (int i = 0; i < n; i++) {
+                remaining[i] = !g.tiles[i].removed;
+                alreadyRemoved[i] = g.tiles[i].removed;
             }
-            Collections.shuffle(types, RNG);
-            for (int i = 0; i < remainingIdx.size(); i++) g.tiles[remainingIdx.get(i)].type = types.get(i);
+
+            // Re-deal the remaining tiles along a freshly verified solvable order,
+            // instead of a blind random shuffle that could easily deadlock the board.
+            int[] newTypeOf = null;
+            final int MAX_ATTEMPTS = 500;
+            for (int attempt = 0; attempt < MAX_ATTEMPTS && newTypeOf == null; attempt++) {
+                List<int[]> removalPairs = buildRemovalOrder(remaining);
+                if (removalPairs == null) continue;
+
+                int[] candidate = assignRemainingTypes(g, removalPairs);
+                if (simulateSolveFrom(alreadyRemoved, removalPairs, candidate)) {
+                    newTypeOf = candidate;
+                }
+            }
+
+            if (newTypeOf == null) {
+                // Extremely unlikely for this layout, but never apply an unverified shuffle -
+                // leave the board exactly as it was rather than risk a worse deadlock.
+                sendJson(ex, 200, boardJson(g));
+                return;
+            }
+
+            for (int i = 0; i < n; i++) {
+                if (remaining[i]) g.tiles[i].type = newTypeOf[i];
+            }
             g.history.clear(); // reshuffled tiles invalidate prior undo history
             sendJson(ex, 200, boardJson(g));
         }
@@ -449,12 +605,14 @@ public class MahjongServer {
             String uri = ex.getRequestURI().getPath();
             if (uri.equals("/")) uri = "/index.html";
             Path file = root.resolve(uri.substring(1)).normalize();
+
             if (!file.startsWith(root) || !Files.exists(file) || Files.isDirectory(file)) {
                 byte[] nf = "404 Not Found".getBytes(StandardCharsets.UTF_8);
                 ex.sendResponseHeaders(404, nf.length);
                 try (OutputStream os = ex.getResponseBody()) { os.write(nf); }
                 return;
             }
+
             String ct = guessContentType(file.toString());
             byte[] bytes = Files.readAllBytes(file);
             ex.getResponseHeaders().set("Content-Type", ct);
@@ -488,6 +646,7 @@ public class MahjongServer {
         server.createContext("/", new StaticHandler(publicDir));
         server.setExecutor(null);
         server.start();
+
         System.out.println("Mahjong Solitaire server running at http://localhost:" + port);
         System.out.println("Serving static files from: " + publicDir);
     }
